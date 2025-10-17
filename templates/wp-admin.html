@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WordPress ‹ Log In</title>
+  <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Slab:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#f7f7f9;--card:#ffffff;--accent:#0073aa;--accent-2:#006099;--muted:#6b7280}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial; background:linear-gradient(180deg,#fbfcfd,#f0f3f6)}
+    .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:48px}
+    .card{width:420px;background:var(--card);border:1px solid rgba(15,23,42,.04);box-shadow:0 10px 30px rgba(2,6,23,.06);border-radius:12px;padding:28px}
+    .brand{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+    .brand .logo{width:56px;height:56px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;font-weight:700;font-family:'Roboto Slab',serif}
+    .brand h1{font-size:18px;margin:0;color:#0f172a;font-weight:600}
+    .brand p{margin:0;color:var(--muted);font-size:13px}
+    label{display:block;font-weight:600;margin-top:12px;font-size:13px;color:#0f172a}
+    input[type=text],input[type=password]{width:100%;padding:12px 14px;border-radius:8px;border:1px solid #e6eef6;background:#fff;margin-top:6px;font-size:14px}
+    .row{display:flex;align-items:center;justify-content:space-between;margin-top:10px}
+    .remember{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+    .actions{display:flex;align-items:center;gap:10px;margin-top:18px}
+    .btn{background:var(--accent);color:#fff;padding:10px 14px;border-radius:8px;border:none;font-weight:700;cursor:pointer;flex:1}
+    .btn.ghost{background:transparent;border:1px solid #e6eef6;color:#0f172a;font-weight:600;flex:none;padding:9px 12px}
+    .small{font-size:13px;color:var(--muted)}
+    .notice{border-left:4px solid #f59e0b;background:#fff7ed;padding:10px;border-radius:6px;margin-top:14px;color:#92400e;font-size:13px}
+    .footer{margin-top:18px;font-size:12px;color:var(--muted);text-align:center}
+    .lost{color:var(--accent);text-decoration:none;font-weight:600}
+    .error{color:#c53030;margin-top:10px;font-weight:600}
+    @media (max-width:460px){.card{width:92%}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" role="main" aria-labelledby="loginTitle">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">WP</div>
+        <div>
+          <h1 id="loginTitle">WordPress</h1>
+          <p class="small">Sign in to manage your site</p>
+        </div>
+      </div>
+
+      <div id="status" class="small" aria-live="polite"></div>
+
+      <!-- IMPORTANT: action and names match your Flask route -->
+      <form id="loginForm" action="/wp-admin-login" method="POST" autocomplete="on" novalidate>
+        <label for="user">Username or Email Address</label>
+        <input id="user" name="username" type="text" autocapitalize="off" autocorrect="off" placeholder="admin or admin@example.com" required>
+
+        <label for="pass">Password</label>
+        <input id="pass" name="password" type="password" placeholder="Password" required>
+
+        <div class="row">
+          <label class="remember"><input id="remember" name="remember" type="checkbox"> Remember Me</label>
+          <a class="lost" href="#" id="lostLink">Lost your password?</a>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn">Log In</button>
+          <button type="button" class="btn ghost" id="cancelBtn">Cancel</button>
+        </div>
+      </form>
+
+      <div id="message" class="notice" style="display:none"></div>
+
+      <div class="footer">
+        <div class="small">Back to <a href="#" onclick="return false">example.com</a></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const status = document.getElementById('status');
+    const msg = document.getElementById('message');
+    const cancel = document.getElementById('cancelBtn');
+    const lost = document.getElementById('lostLink');
+
+    function nowISO(){ return new Date().toISOString(); }
+    function showTemporary(text, timeout=4500){
+      msg.style.display = 'block';
+      msg.textContent = text;
+      setTimeout(()=>{ msg.style.display='none'; }, timeout);
+    }
+
+    form.addEventListener('submit', async (ev)=>{
+      // let native form submit proceed after our beacon/fetch attempt
+      // but prevent default to always show fake response without navigating (keeps attacker engaged)
+      ev.preventDefault();
+
+      const u = document.getElementById('user').value.trim();
+      const p = document.getElementById('pass').value;
+      const r = document.getElementById('remember').checked;
+      const ua = navigator.userAgent || '';
+      const payload = {
+        time: nowISO(),
+        ip: '',                      // server will fill request.remote_addr
+        username: u,
+        password: p,
+        remember: r,
+        user_agent: ua,
+        port: location.port || '-',
+        url: location.href
+      };
+
+      status.textContent = 'Processing...';
+
+      // try beacon (fire-and-forget), fallback to fetch
+      try{
+        navigator.sendBeacon('/_honeypot/log', JSON.stringify(payload));
+      }catch(e){
+        try{
+          await fetch('/_honeypot/log', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+        }catch(e){}
+      }
+
+      // Also submit to the real login handler so server-side logger sees it (if desired).
+      // Create a silent POST request to /wp-admin-login (won't navigate because we preventDefault)
+      try{
+        await fetch('/wp-admin-login', {
+          method: 'POST',
+          headers: {'Content-Type':'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({username: u, password: p})
+        });
+      }catch(e){ /* ignore */ }
+
+      status.textContent = '';
+      showTemporary('ERROR: The credentials you entered are incorrect.');
+      document.getElementById('pass').value = '';
+    });
+
+    cancel.addEventListener('click', ()=>{ history.back(); });
+    lost.addEventListener('click', (e)=>{ e.preventDefault(); showTemporary('To reset your password, contact the site administrator.'); });
+  </script>
+</body>
+</html>
