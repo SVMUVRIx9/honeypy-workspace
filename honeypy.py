@@ -1,4 +1,3 @@
-# honeypy.py (updated)
 import argparse
 import subprocess
 import sys
@@ -14,7 +13,6 @@ def spawn_python_call(code):
     return subprocess.Popen(cmd)
 
 def make_honeypot_call_ssh(address, port, username, password):
-    # produce python code that imports ssh_honeypot and calls honeypot(...)
     u = repr(username) if username is not None else "None"
     p = repr(password) if password is not None else "None"
     code = (
@@ -24,7 +22,6 @@ def make_honeypot_call_ssh(address, port, username, password):
     return code
 
 def make_honeypot_call_http(port, username, password):
-    # produce python code that imports web_honeypot and calls run_web_honeypot(...)
     u = repr(username)
     p = repr(password)
     code = (
@@ -68,7 +65,6 @@ def main():
 
     try:
         if args.ssh:
-            # normalize username/password to None when not provided
             username = args.username if args.username not in (None, "") else None
             password = args.password if args.password not in (None, "") else None
 
@@ -80,7 +76,6 @@ def main():
             monitor_process(proc)
 
         elif args.http:
-            # provide defaults for http honeypot if not specified
             username = args.username if args.username not in (None, "") else "admin"
             password = args.password if args.password not in (None, "") else "password"
 
