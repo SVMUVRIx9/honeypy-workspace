@@ -1,133 +1,185 @@
-import re
+#!/usr/bin/env python3
 import os
-import sys
-from collections import Counter
-from datetime import datetime
+import re
+import json
+import requests
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 
-try:
-    import geoip2.database
-    GEO_OK = True
-except:
-    GEO_OK = False
+# ========== CONFIG ==========
+LOG_FILE = "http_audits.log"
+REPORT_FILE = "http_audit_report.txt"
+IPINFO_TOKEN = "b9c415b7381756"   # <- your ipinfo token
 
-TS_RE = re.compile(r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(?P<body>.*)$')
-IP_RE = re.compile(r'(\d{1,3}(?:\.\d{1,3}){3})')
-USER_RE = re.compile(r'username[:=]\s*([^\s,]+)', re.IGNORECASE)
-PASS_RE = re.compile(r'password[:=]\s*([^\s,]+)', re.IGNORECASE)
-CMD_RE = re.compile(r'executed[:=]\s*(.+)', re.IGNORECASE)
-PORT_COLON_RE = re.compile(r'(?<!\d):(\d{2,5})')         # colon followed by port
-PORT_WORD_RE = re.compile(r'\bport[:=]?\s*(\d{2,5})', re.IGNORECASE)
+# ========== regex (tuned to your lines) ==========
+TS_RE = re.compile(r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+')
+IP_RE = re.compile(r'Client with IP Address:\s*(\d{1,3}(?:\.\d{1,3}){3})')
+USER_RE = re.compile(r'Username[:=]\s*([^\s,]+)', re.IGNORECASE)
+PASS_RE = re.compile(r'Password[:=]\s*([^\s,]+)', re.IGNORECASE)
 
-def get_geo_info(ip):
-    if ip.startswith("127.") or ip.startswith("192.168.") or ip.startswith("10."):
-        return "Local Network"
-    if not GEO_OK or not os.path.exists("GeoLite2-City.mmdb"):
-        return "Unknown"
+# ========== caches ==========
+_geo_cache = {}
+_vpn_cache = {}
+
+# ========== helpers ==========
+def now_utc_str():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+def ipinfo_lookup(ip):
+    """Return (location_str, vpn_str) using ipinfo.io, with caching and graceful fallback."""
+    if not ip or ip == "-":
+        return "Unknown", "Unknown"
+    if ip in _geo_cache and ip in _vpn_cache:
+        return _geo_cache[ip], _vpn_cache[ip]
+
+    base = f"https://ipinfo.io/{ip}/json"
+    if IPINFO_TOKEN:
+        base += f"?token={IPINFO_TOKEN}"
     try:
-        with geoip2.database.Reader("GeoLite2-City.mmdb") as reader:
-            r = reader.city(ip)
-            country = r.country.name or "Unknown Country"
-            city = r.city.name or ""
-            return f"{city}, {country}" if city else country
-    except:
-        return "Unknown"
+        r = requests.get(base, timeout=5)
+        if r.status_code != 200:
+            _geo_cache[ip] = "Unknown"
+            _vpn_cache[ip] = "Unknown"
+            return "Unknown", "Unknown"
+        data = r.json()
+        city = data.get("city", "") or ""
+        region = data.get("region", "") or ""
+        country = data.get("country", "") or ""
+        org = data.get("org", "") or ""
+        loc_parts = [p for p in (city, region, country) if p]
+        loc = ", ".join(loc_parts) if loc_parts else (org or "Unknown")
+        # privacy flags (ipinfo paid returns 'privacy')
+        privacy = data.get("privacy") or {}
+        flags = []
+        if isinstance(privacy, dict):
+            if privacy.get("vpn"):
+                flags.append("VPN")
+            if privacy.get("proxy"):
+                flags.append("Proxy")
+            if privacy.get("tor"):
+                flags.append("Tor")
+            if privacy.get("hosting"):
+                flags.append("Hosting")
+        vpn_str = "No"
+        if flags:
+            vpn_str = "Yes (" + "/".join(flags) + ")"
+        # store caches
+        _geo_cache[ip] = f"{loc} ({org})" if org else loc
+        _vpn_cache[ip] = vpn_str
+        return _geo_cache[ip], _vpn_cache[ip]
+    except Exception:
+        _geo_cache[ip] = "Unknown"
+        _vpn_cache[ip] = "Unknown"
+        return "Unknown", "Unknown"
 
-def extract_ts_and_body(line):
-    m = TS_RE.match(line)
-    if m:
-        try:
-            ts = datetime.strptime(m.group('ts'), "%Y-%m-%d %H:%M:%S")
-            return ts, m.group('body')
-        except:
-            return None, line.strip()
-    return None, line.strip()
+# ========== parse log ==========
+def parse_http_logs():
+    """
+    Parses lines like:
+    2025-10-18 20:17:05,788 Client with IP Address: 196.75.162.63 entered
+    Username: DEMBELE, Password: LIDAHA
+    """
+    creds = []   # list of (ip, ts_str, user, pass)
+    lines = []
+    if not os.path.exists(LOG_FILE):
+        print(f"[!] Log file not found: {LOG_FILE}")
+        return creds, 0
 
-def extract_port_from_text(text):
-    m = PORT_WORD_RE.search(text)
-    if m:
-        return m.group(1)
-    m2 = PORT_COLON_RE.findall(text)
-    if m2:
-        # prefer last colon-port occurrence that's not part of IP (heuristic)
-        for v in reversed(m2):
-            return v
-    return "-"
+    with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as fh:
+        # We'll read lines, keep state in case IP and credentials are on different lines (like your sample)
+        pending_ip = None
+        pending_ts = None
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
 
-def parse_logs():
-    creds = []
-    cmds = []
+            # timestamp extraction on line start
+            ts_m = TS_RE.match(line)
+            if ts_m:
+                try:
+                    ts = datetime.strptime(ts_m.group("ts"), "%Y-%m-%d %H:%M:%S")
+                    pending_ts = ts.strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pending_ts = "N/A"
 
-    if os.path.exists("cmd_audits.log"):
-        with open("cmd_audits.log", "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                ts, body = extract_ts_and_body(line)
-                ip_m = IP_RE.search(body)
-                if not ip_m:
-                    continue
-                ip = ip_m.group(1)
-                user_m = USER_RE.search(body)
-                pass_m = PASS_RE.search(body)
+            # IP line
+            ip_m = IP_RE.search(line)
+            if ip_m:
+                pending_ip = ip_m.group(1)
+
+            # username/password might be on same or next line
+            user_m = USER_RE.search(line)
+            pass_m = PASS_RE.search(line)
+            if user_m or pass_m:
                 user = user_m.group(1) if user_m else "-"
-                pwd = pass_m.group(1) if pass_m else "-"
-                port = extract_port_from_text(body)
-                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "N/A"
-                creds.append((ip, ts_str, port, user, pwd))
+                pwd  = pass_m.group(1) if pass_m else "-"
+                ts_str = pending_ts or "N/A"
+                ip_val = pending_ip or "-"
+                creds.append((ip_val, ts_str, user, pwd))
+                # clear pending (avoid reuse for unrelated lines)
+                pending_ip = None
+                pending_ts = None
 
-    if os.path.exists("audits.log"):
-        with open("audits.log", "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
-                ts, body = extract_ts_and_body(line)
-                ip_m = IP_RE.search(body)
-                if not ip_m:
-                    continue
-                ip = ip_m.group(1)
-                cmd_m = CMD_RE.search(body)
-                if cmd_m:
-                    cmd = cmd_m.group(1).strip()
-                else:
-                    rest = body[ip_m.end():].strip()
-                    cand = re.search(r'([A-Za-z0-9_\-./\|><\s]+)$', rest)
-                    cmd = cand.group(1).strip() if cand else None
-                if not cmd:
-                    continue
-                port = extract_port_from_text(body)
-                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "N/A"
-                cmds.append((ip, ts_str, port, cmd))
-    return creds, cmds
+    return creds, len(creds)
 
+# ========== generate text report ==========
 def generate_report():
-    creds, cmds = parse_logs()
-    all_ips = [ip for ip, _, _, _, _ in creds] + [ip for ip, _, _, _ in cmds]
-    ip_count = Counter(all_ips)
-    t = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    creds, total = parse_http_logs()
+    ip_counts = Counter([c[0] for c in creds if c[0] and c[0] != "-"])
+    cred_pairs = Counter([(c[2], c[3]) for c in creds if (c[2] and c[2] != "-") or (c[3] and c[3] != "-")])
 
-    with open("report.txt", "w", encoding="utf-8") as rpt:
-        rpt.write("===== HONEYPY ATTACK REPORT =====\n")
-        rpt.write(f"Generated on: {t}\n\n")
+    header_lines = []
+    header_lines.append("===== HONEYPY HTTP ATTACK REPORT =====")
+    header_lines.append(f"Generated on: {now_utc_str()}\n")
+    header_lines.append(f"Total entries processed: {total}")
+    header_lines.append(f"Unique attacker IPs: {len(ip_counts)}\n")
 
-        rpt.write("Top Attacker IPs:\n")
-        if ip_count:
-            for ip, cnt in ip_count.most_common(20):
-                geo = get_geo_info(ip)
-                rpt.write(f"{ip:20} | {geo:25} | {cnt} attempts\n")
-        else:
-            rpt.write("No IPs found.\n")
+    body_lines = []
 
-        rpt.write("\nCaptured Credentials: \n\nIP                   | Timestamp           | Port   | User            | Pass\n")
-        if creds:
-            for ip, ts, port, user, pwd in creds:
-                geo = get_geo_info(ip)
-                rpt.write(f"{ip:20} | {ts} | {port:6} | {user:15} | {pwd:15} | {geo}\n")
-        else:
-            rpt.write("No credentials captured.\n")
+    # Top IPs
+    body_lines.append("Top Attacker IPs:")
+    if ip_counts:
+        for ip, cnt in ip_counts.most_common():
+            geo, vpn = ipinfo_lookup(ip)
+            body_lines.append(f"{ip:20} | {geo:40} | {vpn:20} | {cnt} attempts")
+    else:
+        body_lines.append("No attacker IPs found.")
+    body_lines.append("")
 
-        rpt.write("\nExecuted Commands: \n\nIP                   | Timestamp           | Port   | Command\n")
-        if cmds:
-            for ip, ts, port, cmd in cmds:
-                geo = get_geo_info(ip)
-                rpt.write(f"{ip:20} | {ts} | {port:6} | {cmd} | {geo}\n")
-        else:
-            rpt.write("No commands executed.\n")
+    # Captured Credentials
+    body_lines.append("Captured Credentials:")
+    if creds:
+        body_lines.append(f"{'IP':18} | {'Timestamp':19} | {'User':15} | {'Pass':15} | {'Location (ASN/Org)'}")
+        for ip, ts, user, pwd in creds:
+            geo, vpn = ipinfo_lookup(ip)
+            body_lines.append(f"{ip:18} | {ts:19} | {user:15} | {pwd:15} | {geo}")
+    else:
+        body_lines.append("No credentials captured.")
+    body_lines.append("")
+
+    # Credential pairs summary
+    body_lines.append("Top Credential Pairs (user,password):")
+    if cred_pairs:
+        for (u,p), c in cred_pairs.most_common(50):
+            body_lines.append(f"{c:5} | {u:20} | {p:20}")
+    else:
+        body_lines.append("No credential pairs to show.")
+    body_lines.append("")
+
+    # write to file and print
+    with open(REPORT_FILE, "w", encoding="utf-8") as rpt:
+        for L in header_lines + body_lines:
+            rpt.write(L + "\n")
+    # also print to stdout
+    print("\n".join(header_lines + body_lines))
+    print(f"\n[+] Saved text report to: {REPORT_FILE}")
 
 if __name__ == "__main__":
+    # check that requests exists
+    try:
+        import requests  # noqa: F401
+    except Exception:
+        print("[!] Python 'requests' module not installed. Install with: pip install requests")
+        raise SystemExit(1)
     generate_report()
