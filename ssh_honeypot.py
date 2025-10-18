@@ -1,4 +1,3 @@
-# ssh_honeypot.py
 import logging
 from logging.handlers import RotatingFileHandler
 import socket
@@ -9,7 +8,6 @@ import sys
 logging_format = logging.Formatter('%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
 SSH_BANNER = "SSH-2.0-OpenSSH_8.9p1 MyCorp-Jumpbox_1.0"
 
-# try to load host key, show clear error if missing
 try:
     host_key = paramiko.RSAKey.from_private_key_file('server.key')
 except Exception as e:
@@ -43,7 +41,6 @@ def emulated_shell(channel, client_ip):
                 continue
             channel.send(char)
             command += char
-            # accept CR or LF as Enter
             if char in (b'\r', b'\n'):
                 command_str = command.strip().decode(errors="ignore")
                 funnel_logger.info(f"{client_ip} executed: {command_str}")
