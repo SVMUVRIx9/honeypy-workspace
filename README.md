@@ -112,18 +112,6 @@ python3 http_audit_report.py  # HTTP Report
 
 ---
 
-## 📸 Recommended Image for LinkedIn Post
-
-Use a clean, **cybersecurity-themed image** to grab attention. Examples:
-
-* A dark-themed dashboard with IP map visualization
-* A terminal screen with scrolling logs ("attacker connected", etc.)
-* A world map glowing with connection lines (representing global attack sources)
-* A stylized image with title overlay: *“Cloud Honeypot Attack Report System – by Marwane Boujlida”*
-
-If you want, I can **generate one** for you that matches your honeypot’s theme — dark, technical, and professional.
-
----
 
 ## 🧩 Future Improvements
 
