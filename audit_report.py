@@ -6,27 +6,22 @@ import requests
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
-# ========== CONFIG ==========
 LOG_FILE = "http_audits.log"
 REPORT_FILE = "http_audit_report.txt"
-IPINFO_TOKEN = "b9c415b7381756"   # <- your ipinfo token
+IPINFO_TOKEN = "b9c415b7381756"
 
-# ========== regex (tuned to your lines) ==========
 TS_RE = re.compile(r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+')
 IP_RE = re.compile(r'Client with IP Address:\s*(\d{1,3}(?:\.\d{1,3}){3})')
 USER_RE = re.compile(r'Username[:=]\s*([^\s,]+)', re.IGNORECASE)
 PASS_RE = re.compile(r'Password[:=]\s*([^\s,]+)', re.IGNORECASE)
 
-# ========== caches ==========
 _geo_cache = {}
 _vpn_cache = {}
 
-# ========== helpers ==========
 def now_utc_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def ipinfo_lookup(ip):
-    """Return (location_str, vpn_str) using ipinfo.io, with caching and graceful fallback."""
     if not ip or ip == "-":
         return "Unknown", "Unknown"
     if ip in _geo_cache and ip in _vpn_cache:
@@ -48,7 +43,6 @@ def ipinfo_lookup(ip):
         org = data.get("org", "") or ""
         loc_parts = [p for p in (city, region, country) if p]
         loc = ", ".join(loc_parts) if loc_parts else (org or "Unknown")
-        # privacy flags (ipinfo paid returns 'privacy')
         privacy = data.get("privacy") or {}
         flags = []
         if isinstance(privacy, dict):
@@ -63,7 +57,6 @@ def ipinfo_lookup(ip):
         vpn_str = "No"
         if flags:
             vpn_str = "Yes (" + "/".join(flags) + ")"
-        # store caches
         _geo_cache[ip] = f"{loc} ({org})" if org else loc
         _vpn_cache[ip] = vpn_str
         return _geo_cache[ip], _vpn_cache[ip]
@@ -72,21 +65,14 @@ def ipinfo_lookup(ip):
         _vpn_cache[ip] = "Unknown"
         return "Unknown", "Unknown"
 
-# ========== parse log ==========
 def parse_http_logs():
-    """
-    Parses lines like:
-    2025-10-18 20:17:05,788 Client with IP Address: 196.75.162.63 entered
-    Username: DEMBELE, Password: LIDAHA
-    """
-    creds = []   # list of (ip, ts_str, user, pass)
+    creds = []
     lines = []
     if not os.path.exists(LOG_FILE):
         print(f"[!] Log file not found: {LOG_FILE}")
         return creds, 0
 
     with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as fh:
-        # We'll read lines, keep state in case IP and credentials are on different lines (like your sample)
         pending_ip = None
         pending_ts = None
         for raw in fh:
@@ -94,7 +80,6 @@ def parse_http_logs():
             if not line:
                 continue
 
-            # timestamp extraction on line start
             ts_m = TS_RE.match(line)
             if ts_m:
                 try:
@@ -103,12 +88,10 @@ def parse_http_logs():
                 except Exception:
                     pending_ts = "N/A"
 
-            # IP line
             ip_m = IP_RE.search(line)
             if ip_m:
                 pending_ip = ip_m.group(1)
 
-            # username/password might be on same or next line
             user_m = USER_RE.search(line)
             pass_m = PASS_RE.search(line)
             if user_m or pass_m:
@@ -117,13 +100,11 @@ def parse_http_logs():
                 ts_str = pending_ts or "N/A"
                 ip_val = pending_ip or "-"
                 creds.append((ip_val, ts_str, user, pwd))
-                # clear pending (avoid reuse for unrelated lines)
                 pending_ip = None
                 pending_ts = None
 
     return creds, len(creds)
 
-# ========== generate text report ==========
 def generate_report():
     creds, total = parse_http_logs()
     ip_counts = Counter([c[0] for c in creds if c[0] and c[0] != "-"])
@@ -137,7 +118,6 @@ def generate_report():
 
     body_lines = []
 
-    # Top IPs
     body_lines.append("Top Attacker IPs:")
     if ip_counts:
         for ip, cnt in ip_counts.most_common():
@@ -147,7 +127,6 @@ def generate_report():
         body_lines.append("No attacker IPs found.")
     body_lines.append("")
 
-    # Captured Credentials
     body_lines.append("Captured Credentials:")
     if creds:
         body_lines.append(f"{'IP':18} | {'Timestamp':19} | {'User':15} | {'Pass':15} | {'Location (ASN/Org)'}")
@@ -158,7 +137,6 @@ def generate_report():
         body_lines.append("No credentials captured.")
     body_lines.append("")
 
-    # Credential pairs summary
     body_lines.append("Top Credential Pairs (user,password):")
     if cred_pairs:
         for (u,p), c in cred_pairs.most_common(50):
@@ -167,18 +145,15 @@ def generate_report():
         body_lines.append("No credential pairs to show.")
     body_lines.append("")
 
-    # write to file and print
     with open(REPORT_FILE, "w", encoding="utf-8") as rpt:
         for L in header_lines + body_lines:
             rpt.write(L + "\n")
-    # also print to stdout
     print("\n".join(header_lines + body_lines))
     print(f"\n[+] Saved text report to: {REPORT_FILE}")
 
 if __name__ == "__main__":
-    # check that requests exists
     try:
-        import requests  # noqa: F401
+        import requests
     except Exception:
         print("[!] Python 'requests' module not installed. Install with: pip install requests")
         raise SystemExit(1)
