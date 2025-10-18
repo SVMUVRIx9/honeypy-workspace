@@ -139,7 +139,7 @@ If you want, I can **generate one** for you that matches your honeypot’s theme
 **Marwane Boujlida**
 *Engineering Student & Cybersecurity Enthusiast*
 🔗 [LinkedIn Profile](https://www.linkedin.com/in/marwane-boujlida-14a816379)
-🐙 [GitHub Repository](https://github.com/SVMUVRIx9/honeypy-honeypot)
+🐙 [GitHub Repository](https://github.com/SVMUVRIx9/honeypy-workspace.git)
 
 ---
 
